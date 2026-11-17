@@ -1,102 +1,38 @@
 import os
-import asyncio
-import logging
 import random
-from contextlib import asynccontextmanager
-from typing import Optional
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import psycopg2
-from psycopg2.extras import RealDictCursor
+from sqlalchemy import create_engine, Column, Integer, BigInteger, String, JSON
+from sqlalchemy.orm import declarative_base, sessionmaker
 
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart, Command
-from aiogram.types import WebAppInfo, InlineKeyboardMarkup, InlineKeyboardButton
+# Настройки подключения
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://postgres:%40plushwallet20132008Mm$@db.dzpxmhzdousaureiedul.supabase.co:5432/postgres"
+)
+# Укажи свой Telegram ID здесь, чтобы видеть кнопку Админки!
+ADMIN_IDS = [7127705775] 
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
 
-# Переменные окружения
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "7127705775"))
-MINI_APP_URL = os.getenv("MINI_APP_URL", "https://your-frontend.vercel.app")
-DATABASE_URL = os.getenv("DATABASE_URL", "") # Ссылка подключения из Supabase (начинается с postgresql://...)
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    tg_id = Column(BigInteger, unique=True, index=True)
+    nickname = Column(String, default="Игрок")
+    balance = Column(BigInteger, default=1000)
+    level = Column(Integer, default=1)
+    xp = Column(Integer, default=0)
+    gang = Column(String, default="SHADOW")
+    income_per_hour = Column(Integer, default=100)
+    inventory = Column(JSON, default=list)
 
-# Функция для подключения к PostgreSQL (Supabase)
-def get_db_connection():
-    if not DATABASE_URL:
-        return None
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-    return conn
+Base.metadata.create_all(bind=engine)
 
-# Магазин по умолчанию
-SHOP_ITEMS = [
-    {"id": 1, "name": "Кепка новичка", "type": "accessory", "rarity": "common", "price": 1000},
-    {"id": 2, "name": "Белая футболка", "type": "skin", "rarity": "common", "price": 2500},
-    {"id": 3, "name": "Тренч SHADOW", "type": "skin", "rarity": "epic", "price": 50000},
-    {"id": 4, "name": "Спортивная тачка", "type": "car", "rarity": "legendary", "price": 500000},
-]
-
-def get_or_create_user_db(tg_id: int, nickname: str = "Боец"):
-    conn = get_db_connection()
-    if not conn:
-        # Если база еще не подключена, возвращаем фейк для теста
-        return {"tg_id": tg_id, "nickname": nickname, "balance": 10000, "level": 1, "gang": "SHADOW"}
-    
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM users WHERE tg_id = %s;", (tg_id,))
-            user = cursor.fetchone()
-            if not user:
-                cursor.execute(
-                    "INSERT INTO users (tg_id, nickname, balance, level, xp, max_xp, gang) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING *;",
-                    (tg_id, nickname, 10000, 1, 450, 1000, "SHADOW")
-                )
-                user = cursor.fetchone()
-                conn.commit()
-            return dict(user)
-    finally:
-        conn.close()
-
-# Инициализация бота
-bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
-dp = Dispatcher()
-
-if bot:
-    @dp.message(CommandStart())
-    async def cmd_start(message: types.Message):
-        user = get_or_create_user_db(message.from_user.id, message.from_user.first_name)
-        if user.get("is_banned"):
-            return await message.answer("🚫 Аккаунт заблокирован.")
-
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎮 Открыть TSTCOIN", web_app=WebAppInfo(url=MINI_APP_URL))]
-        ])
-        await message.answer(
-            f"👋 Привет, <b>{user['nickname']}</b>!\n\n"
-            f"💰 Баланс: <b>{user['balance']:,}</b> монет\n"
-            f"🏴 Банда: <b>{user['gang']}</b>",
-            reply_markup=kb,
-            parse_mode="HTML"
-        )
-
-# Жизненный цикл приложения (FastAPI + фоновый опрос Telegram)
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    polling_task = None
-    if bot:
-        polling_task = asyncio.create_task(dp.start_polling(bot))
-        logger.info("🤖 Telegram бот запущен в фоне!")
-    yield
-    if polling_task:
-        polling_task.cancel()
-        if bot:
-            await bot.session.close()
-
-app = FastAPI(title="TSTCOIN API", lifespan=lifespan)
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -106,16 +42,187 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API Эндпоинты
+SHOP_ITEMS = [
+    {"id": 1, "name": "Кепка новичка", "type": "Accessory", "price": 1000, "income": 50, "icon": "🧢"},
+    {"id": 2, "name": "Белая футболка", "type": "Skin", "price": 2500, "income": 150, "icon": "👕"},
+    {"id": 3, "name": "Тренч SHADOW", "type": "Skin", "price": 50000, "income": 3500, "icon": "🧥"},
+    {"id": 4, "name": "Спортивная тачка", "type": "Car", "price": 500000, "income": 40000, "icon": "🏎️"},
+    {"id": 5, "name": "Пентхаус в Сити", "type": "Real Estate", "price": 2500000, "income": 250000, "icon": "🏙️"},
+]
+
+class BetRequest(BaseModel):
+    tg_id: int
+    amount: int
+    multiplier: float = 2.0
+    choice: str = ""
+
+class BuyRequest(BaseModel):
+    tg_id: int
+    item_id: int
+
+class AdminAction(BaseModel):
+    admin_id: int
+    target_tg_id: int
+    amount: int
+
+class TapRequest(BaseModel):
+    tg_id: int
+    nickname: str = "Боец"
+
 @app.get("/")
-async def health_check():
-    return {"status": "ok", "game": "TSTCOIN", "database": "connected" if DATABASE_URL else "memory_only"}
+def root():
+    return {"status": "TSTCOIN API ONLINE"}
 
-@app.get("/api/profile/{tg_id}")
-async def get_profile(tg_id: int):
-    user = get_or_create_user_db(tg_id)
-    return user
+@app.post("/api/auth")
+def auth_user(req: TapRequest):
+    db = SessionLocal()
+    user = db.query(User).filter(User.tg_id == req.tg_id).first()
+    if not user:
+        user = User(tg_id=req.tg_id, nickname=req.nickname, balance=5000, inventory=[])
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    elif req.nickname and req.nickname != "Боец" and user.nickname != req.nickname:
+        user.nickname = req.nickname
+        db.commit()
+    
+    res = {
+        "tg_id": user.tg_id,
+        "nickname": user.nickname,
+        "balance": user.balance,
+        "level": user.level,
+        "xp": user.xp,
+        "gang": user.gang,
+        "income_per_hour": user.income_per_hour,
+        "inventory": user.inventory or [],
+        "is_admin": user.tg_id in ADMIN_IDS
+    }
+    db.close()
+    return res
 
-@app.get("/api/магазин")
-async def get_shop():
+@app.post("/api/tap")
+def tap_earn(req: TapRequest):
+    db = SessionLocal()
+    user = db.query(User).filter(User.tg_id == req.tg_id).first()
+    if not user:
+        db.close()
+        raise HTTPException(status_code=404, detail="Юзер не найден")
+    
+    reward = 10 * user.level
+    user.balance += reward
+    user.xp += 10
+    if user.xp >= user.level * 100:
+        user.xp = 0
+        user.level += 1
+    db.commit()
+    bal, lvl, xp = user.balance, user.level, user.xp
+    db.close()
+    return {"balance": bal, "level": lvl, "xp": xp, "reward": reward}
+
+@app.get("/api/shop")
+def get_shop():
     return {"items": SHOP_ITEMS}
+
+@app.post("/api/shop/buy")
+def buy_item(req: BuyRequest):
+    db = SessionLocal()
+    user = db.query(User).filter(User.tg_id == req.tg_id).first()
+    item = next((i for i in SHOP_ITEMS if i["id"] == req.item_id), None)
+    
+    if not user or not item:
+        db.close()
+        raise HTTPException(status_code=404, detail="Ошибка покупки")
+    if user.balance < item["price"]:
+        db.close()
+        raise HTTPException(status_code=400, detail="Недостаточно монет!")
+    
+    inv = list(user.inventory or [])
+    if item["id"] in inv:
+        db.close()
+        raise HTTPException(status_code=400, detail="Уже куплено!")
+        
+    user.balance -= item["price"]
+    user.income_per_hour += item["income"]
+    inv.append(item["id"])
+    user.inventory = inv
+    db.commit()
+    
+    res = {"balance": user.balance, "income_per_hour": user.income_per_hour, "inventory": user.inventory}
+    db.close()
+    return res
+
+@app.post("/api/casino/upgrader")
+def casino_upgrader(req: BetRequest):
+    db = SessionLocal()
+    user = db.query(User).filter(User.tg_id == req.tg_id).first()
+    if not user:
+        db.close()
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if req.amount <= 0 or req.amount > user.balance:
+        db.close()
+        raise HTTPException(status_code=400, detail="Неверная сумма ставки")
+    
+    chance = min(85.0, (1.0 / req.multiplier) * 90.0)
+    win = random.uniform(0, 100) <= chance
+    
+    if win:
+        payout = int(req.amount * req.multiplier) - req.amount
+        user.balance += payout
+    else:
+        payout = 0
+        user.balance -= req.amount
+        
+    db.commit()
+    new_bal = user.balance
+    db.close()
+    return {"win": win, "payout": int(req.amount * req.multiplier) if win else 0, "new_balance": new_bal}
+
+@app.post("/api/casino/dice")
+def casino_dice(req: BetRequest):
+    db = SessionLocal()
+    user = db.query(User).filter(User.tg_id == req.tg_id).first()
+    if not user or req.amount <= 0 or req.amount > user.balance:
+        db.close()
+        raise HTTPException(status_code=400, detail="Недостаточно средств")
+        
+    roll = random.randint(1, 100)
+    win = (req.choice == "under" and roll < 48) or (req.choice == "over" and roll > 52)
+    
+    if win:
+        user.balance += req.amount
+    else:
+        user.balance -= req.amount
+        
+    db.commit()
+    new_bal = user.balance
+    db.close()
+    return {"win": win, "roll": roll, "new_balance": new_bal}
+
+# === АДМИН-ПАНЕЛЬ ===
+@app.get("/api/admin/users")
+def admin_get_users(admin_id: int):
+    if admin_id not in ADMIN_IDS:
+        raise HTTPException(status_code=403, detail="Нет доступа")
+    db = SessionLocal()
+    users = db.query(User).order_by(User.balance.desc()).limit(20).all()
+    res = [{"tg_id": u.tg_id, "nickname": u.nickname, "balance": u.balance, "level": u.level} for u in users]
+    db.close()
+    return {"users": res}
+
+@app.post("/api/admin/give")
+def admin_give_money(req: AdminAction):
+    if req.admin_id not in ADMIN_IDS:
+        raise HTTPException(status_code=403, detail="Нет доступа")
+    db = SessionLocal()
+    target = db.query(User).filter(User.tg_id == req.target_tg_id).first()
+    if not target:
+        db.close()
+        raise HTTPException(status_code=404, detail="Игрок с таким ID не найден")
+    target.balance += req.amount
+    if target.balance < 0:
+        target.balance = 0
+    db.commit()
+    new_bal = target.balance
+    db.close()
+    return {"status": "ok", "new_balance": new_bal}
+
